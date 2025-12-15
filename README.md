@@ -26,7 +26,7 @@ This comprehensive documentation includes:
 - **Control Input:** USART3 - 8 bytes (speedL, speedR, checksum)
 - **Feedback Output:** USART2/USART3 - 26 bytes with extended telemetry
 - **Timeout Protection:** 0.8 seconds (automatic motor stop if no valid command received)
-- **Protocol Conformance:** 100% compatible with EFeru/hoverboard-firmware-hack-FOC
+
 
 #### Serial Protocol Summary
 
