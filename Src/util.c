@@ -862,8 +862,13 @@ void readInputRaw(void) {
         input1[inIdx].raw = (ibusL_captured_value[0] - 500) * 2;
         input2[inIdx].raw = (ibusL_captured_value[1] - 500) * 2; 
       #else
+        #if defined(VARIANT_LIFTLINE)
+        input1[inIdx].raw = commandL.speedL;  // Left motor command
+        input2[inIdx].raw = commandL.speedR;  // Right motor command
+        #else
         input1[inIdx].raw = commandL.steer;
         input2[inIdx].raw = commandL.speed;
+        #endif
       #endif
     }
     #endif
@@ -876,8 +881,13 @@ void readInputRaw(void) {
         input1[inIdx].raw = (ibusR_captured_value[0] - 500) * 2;
         input2[inIdx].raw = (ibusR_captured_value[1] - 500) * 2; 
       #else
+        #if defined(VARIANT_LIFTLINE)
+        input1[inIdx].raw = commandR.speedL;  // Left motor command
+        input2[inIdx].raw = commandR.speedR;  // Right motor command
+        #else
         input1[inIdx].raw = commandR.steer;
         input2[inIdx].raw = commandR.speed;
+        #endif
       #endif
     }
     #endif
@@ -1273,7 +1283,11 @@ void usart_process_command(SerialCommand *command_in, SerialCommand *command_out
   #else
   uint16_t checksum;
   if (command_in->start == SERIAL_START_FRAME) {
+    #if defined(VARIANT_LIFTLINE)
+    checksum = (uint16_t)(command_in->start ^ command_in->speedL ^ command_in->speedR);
+    #else
     checksum = (uint16_t)(command_in->start ^ command_in->steer ^ command_in->speed);
+    #endif
     if (command_in->checksum == checksum) {
       *command_out = *command_in;
       if (usart_idx == 2) {             // Sideboard USART2

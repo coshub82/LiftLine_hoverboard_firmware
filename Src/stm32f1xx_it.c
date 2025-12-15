@@ -50,6 +50,13 @@ extern DMA_HandleTypeDef hdma_usart3_tx;
 /* USER CODE BEGIN 0 */
 extern UART_HandleTypeDef huart2;
 extern UART_HandleTypeDef huart3;
+
+#if defined(VARIANT_LIFTLINE) && defined(USE_HALL_INTERRUPT_TRACKING)
+extern volatile int32_t hallCountL_irq;
+extern volatile int32_t hallCountR_irq;
+extern volatile int16_t cmdL_sign;
+extern volatile int16_t cmdR_sign;
+#endif
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
@@ -377,6 +384,59 @@ void USART3_IRQHandler(void)
 /* For the available peripheral interrupt handler names,                      */
 /* please refer to the startup file (startup_stm32f1xx.s).                    */
 /******************************************************************************/
+
+#if defined(VARIANT_LIFTLINE) && defined(USE_HALL_INTERRUPT_TRACKING)
+/**
+  * @brief  Gestionnaire d'interruption pour capteurs Hall gauches (EXTI5-7)
+  *         LEFT_HALL_U = PB5, LEFT_HALL_V = PB6, LEFT_HALL_W = PB7
+  *         Incrémente/décrémente le compteur selon la direction de la commande moteur
+  */
+void EXTI9_5_IRQHandler(void)
+{
+  // Vérifier quel capteur Hall a déclenché l'interruption
+  if(__HAL_GPIO_EXTI_GET_IT(LEFT_HALL_U_PIN) != RESET) {
+    __HAL_GPIO_EXTI_CLEAR_IT(LEFT_HALL_U_PIN);
+    
+    // Incrémenter/décrémenter selon le signe de cmdL
+    // cmdL_sign: +1 = avant, -1 = arrière, 0 = arrêt
+    hallCountL_irq += cmdL_sign;
+  }
+  
+  if(__HAL_GPIO_EXTI_GET_IT(LEFT_HALL_V_PIN) != RESET) {
+    __HAL_GPIO_EXTI_CLEAR_IT(LEFT_HALL_V_PIN);
+    hallCountL_irq += cmdL_sign;
+  }
+  
+  if(__HAL_GPIO_EXTI_GET_IT(LEFT_HALL_W_PIN) != RESET) {
+    __HAL_GPIO_EXTI_CLEAR_IT(LEFT_HALL_W_PIN);
+    hallCountL_irq += cmdL_sign;
+  }
+}
+
+/**
+  * @brief  Gestionnaire d'interruption pour capteurs Hall droits (EXTI10-12)
+  *         RIGHT_HALL_U = PC10, RIGHT_HALL_V = PC11, RIGHT_HALL_W = PC12
+  */
+void EXTI15_10_IRQHandler(void)
+{
+  // Vérifier quel capteur Hall a déclenché l'interruption
+  if(__HAL_GPIO_EXTI_GET_IT(RIGHT_HALL_U_PIN) != RESET) {
+    __HAL_GPIO_EXTI_CLEAR_IT(RIGHT_HALL_U_PIN);
+    hallCountR_irq += cmdR_sign;
+  }
+  
+  if(__HAL_GPIO_EXTI_GET_IT(RIGHT_HALL_V_PIN) != RESET) {
+    __HAL_GPIO_EXTI_CLEAR_IT(RIGHT_HALL_V_PIN);
+    hallCountR_irq += cmdR_sign;
+  }
+  
+  if(__HAL_GPIO_EXTI_GET_IT(RIGHT_HALL_W_PIN) != RESET) {
+    __HAL_GPIO_EXTI_CLEAR_IT(RIGHT_HALL_W_PIN);
+    hallCountR_irq += cmdR_sign;
+  }
+}
+#endif /* VARIANT_LIFTLINE && USE_HALL_INTERRUPT_TRACKING */
+
 
 
 /* USER CODE BEGIN 1 */

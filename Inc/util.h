@@ -37,8 +37,13 @@
   #else
     typedef struct{
       uint16_t  start;
-      int16_t   steer;
-      int16_t   speed;
+      #if defined(VARIANT_LIFTLINE)
+      int16_t   speedL;     // Left motor speed command: -1000 to +1000
+      int16_t   speedR;     // Right motor speed command: -1000 to +1000
+      #else
+      int16_t   steer;      // Steering command: -1000 to +1000
+      int16_t   speed;      // Speed command: -1000 to +1000
+      #endif
       uint16_t  checksum;
     } SerialCommand;
   #endif

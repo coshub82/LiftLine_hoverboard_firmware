@@ -75,8 +75,14 @@
  * Then you can verify voltage on debug output value 6 (to get calibrated voltage multiplied by 100).
 */
 #define BAT_FILT_COEF           655       // battery voltage filter coefficient in fixed-point. coef_fixedPoint = coef_floatingPoint * 2^16. In this case 655 = 0.01 * 2^16
-#define BAT_CALIB_REAL_VOLTAGE  3970      // input voltage measured by multimeter (multiplied by 100). In this case 43.00 V * 100 = 4300
-#define BAT_CALIB_ADC           1492      // adc-value measured by mainboard (value nr 5 on UART debug output)
+//Carte 1
+//#define BAT_CALIB_REAL_VOLTAGE  3750      // input voltage measured by multimeter (multiplied by 100). In this case 43.00 V * 100 = 4300
+//#define BAT_CALIB_ADC           1473      // adc-value measured by mainboard (value nr 5 on UART debug output)
+
+//carte 2
+#define BAT_CALIB_REAL_VOLTAGE  3750      // input voltage measured by multimeter (multiplied by 100). In this case 43.00 V * 100 = 4300
+#define BAT_CALIB_ADC           1473      // adc-value measured by mainboard (value nr 5 on UART debug output)
+
 #define BAT_CELLS               10        // battery number of cells. Normal Hoverboard battery: 10s
 #define BAT_LVL2_ENABLE         0         // to beep or not to beep, 1 or 0
 #define BAT_LVL1_ENABLE         1         // to beep or not to beep, 1 or 0
@@ -89,6 +95,40 @@
 #define BAT_LVL1                (350 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // Red blink:    fast beep. Your battery is almost empty. Charge now! [V*100/cell]. In this case 3.50 V/cell
 #define BAT_DEAD                (337 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // All leds off: undervoltage poweroff. (while not driving) [V*100/cell]. In this case 3.37 V/cell
 // ######################## END OF BATTERY ###############################
+
+
+// ############################### ERROR FLAGS ###############################
+// Error flags bits for VARIANT_LIFTLINE feedback (8-bit field)
+#define ERROR_FLAG_NONE           0x00  // No error
+#define ERROR_FLAG_MOTOR_LEFT     0x01  // Bit 0: Left motor error (rtY_Left.z_errCode)
+#define ERROR_FLAG_MOTOR_RIGHT    0x02  // Bit 1: Right motor error (rtY_Right.z_errCode)
+#define ERROR_FLAG_TIMEOUT_SERIAL 0x04  // Bit 2: Serial timeout (command reception lost)
+#define ERROR_FLAG_TIMEOUT_ADC    0x08  // Bit 3: ADC timeout (sensors disconnected)
+#define ERROR_FLAG_BAT_LOW        0x10  // Bit 4: Battery low (BAT_LVL1 - critical)
+#define ERROR_FLAG_BAT_CRITICAL   0x20  // Bit 5: Battery critical (BAT_DEAD - emergency)
+#define ERROR_FLAG_TEMP_HIGH      0x40  // Bit 6: Temperature high (>60°C)
+#define ERROR_FLAG_MOTOR_DISABLED 0x80  // Bit 7: Motors disabled (enable = 0)
+// ######################## END OF ERROR FLAGS ###############################
+
+
+// ############################### STATUS BYTE ###############################
+// Status byte bits for VARIANT_LIFTLINE feedback (8-bit field)
+#define STATUS_ENABLE           0x01  // Bit 0: Motors enabled (enable = 1)
+#define STATUS_BAT_LEVEL_MASK   0x0E  // Bits 1-3: Battery level (0-7, value << 1)
+#define STATUS_CTRL_MODE_MASK   0x30  // Bits 4-5: Control mode (0-3, value << 4)
+#define STATUS_BACKWARD         0x40  // Bit 6: Backward drive active
+#define STATUS_BRAKE_ACTIVE     0x80  // Bit 7: Braking detected
+
+// Battery level values (3 bits: 0-7)
+#define BAT_LEVEL_CRITICAL  0  // < BAT_DEAD
+#define BAT_LEVEL_LVL1      1  // < BAT_LVL1 (red blink)
+#define BAT_LEVEL_LVL2      2  // < BAT_LVL2 (red)
+#define BAT_LEVEL_LVL3      3  // < BAT_LVL3 (yellow blink)
+#define BAT_LEVEL_LVL4      4  // < BAT_LVL4 (yellow)
+#define BAT_LEVEL_LVL5      5  // < BAT_LVL5 (green blink)
+#define BAT_LEVEL_FULL      6  // >= BAT_LVL5 (green)
+#define BAT_LEVEL_RESERVED  7  // Reserved
+// ######################## END OF STATUS BYTE ###############################
 
 
 
@@ -343,13 +383,16 @@
 
 // ############################ VARIANT_LIFTLINE SETTINGS ############################
 #ifdef VARIANT_LIFTLINE
+  // Use a single UART for commands (RX) and status feedback (TX): USART2 (LEFT cable)
+  // Enable USART2 paths
   // #define SIDEBOARD_SERIAL_USART2 0
-  #define CONTROL_SERIAL_USART2  0    // left sensor board cable, disable if ADC or PPM is used! For Arduino control check the hoverSerial.ino
-  #define FEEDBACK_SERIAL_USART2      // left sensor board cable, disable if ADC or PPM is used!
+  #define CONTROL_SERIAL_USART2  0    // left sensor board cable
+  #define FEEDBACK_SERIAL_USART2      // left sensor board cable
 
+  // Disable USART3 (single-UART setup)
   // #define SIDEBOARD_SERIAL_USART3 0
-  // #define CONTROL_SERIAL_USART3  0    // right sensor board cable. Number indicates priority for dual-input. Disable if I2C (nunchuk or lcd) is used! For Arduino control check the hoverSerial.ino
-  // #define FEEDBACK_SERIAL_USART3      // right sensor board cable, disable if I2C (nunchuk or lcd) is used!
+  // #define CONTROL_SERIAL_USART3  0
+  // #define FEEDBACK_SERIAL_USART3
  
   // #define DUAL_INPUTS                 //  UART*(Primary) + SIDEBOARD(Auxiliary). Uncomment this to use Dual-inputs
   #define PRI_INPUT1             3, -1000, 0, 1000, 0     // TYPE, MIN, MID, MAX, DEADBAND. See INPUT FORMAT section
@@ -364,10 +407,25 @@
     #define FLASH_WRITE_KEY      0x1002  // Flash memory writing key. Change this key to ignore the input calibrations from the flash memory and use the ones in config.h
   #endif
 
-  // #define TANK_STEERING              // use for tank steering, each input controls each wheel 
+  #define TANK_STEERING              // use for tank steering, each input controls each wheel 
   // #define SUPPORT_BUTTONS_LEFT       // use left sensor board cable for button inputs.  Disable DEBUG_SERIAL_USART2!
   // #define SUPPORT_BUTTONS_RIGHT      // use right sensor board cable for button inputs. Disable DEBUG_SERIAL_USART3!
+  
+  // ========== PARAMÈTRES POSITION/VITESSE ==========
   #define WHEEL_CIRCUMFERENCE_MM   487   // for 155mm diameter wheels π×155≈486,9 mm
+  #define RPM_TO_KPH_X100(rpm)  ((int16_t)(((int32_t)(rpm) * WHEEL_CIRCUMFERENCE_MM * 6) / 1000))  // Convert RPM to km/h x100 (simplified: ×60×100/10M = ×6000/10M = ×6/1000)
+  
+  // Méthodes de calcul de position (décommenter pour changer):
+  // MÉTHODE 1 (défaut): Intégration RPM - Haute résolution, accumulation d'erreurs
+  // MÉTHODE 2: Comptage Hall polling - Résolution fixe 90 steps/tour, pas d'erreur cumulative
+  // MÉTHODE 3: Comptage Hall interruption - Précision maximale temps réel, aucune perte de transition
+  //#define USE_HALL_POSITION_TRACKING     // Décommenter pour méthode 2 (polling)
+  #define USE_HALL_INTERRUPT_TRACKING    // Décommenter pour méthode 3 (interruption - RECOMMANDÉ haute vitesse)
+  #define HALL_STEPS_PER_REV  90         // 6 transitions × 15 paires de pôles = 90 positions/tour
+  
+  // Disable debug UART to avoid using the second UART
+  // #define DEBUG_SERIAL_USART2           // left sensor cable debug
+  // #define DEBUG_SERIAL_USART3           // right sensor cable debug
 
 
   #endif
@@ -678,13 +736,13 @@
 #endif
 #if defined(FEEDBACK_SERIAL_USART2) || defined(CONTROL_SERIAL_USART2) || defined(DEBUG_SERIAL_USART2) || defined(SIDEBOARD_SERIAL_USART2)
   #ifndef USART2_BAUD
-    #define USART2_BAUD           115200                  // UART2 baud rate (long wired cable)
+    #define USART2_BAUD           38400                   // UART2 baud rate (long wired cable)
   #endif
   #define USART2_WORDLENGTH       UART_WORDLENGTH_8B      // UART_WORDLENGTH_8B or UART_WORDLENGTH_9B
 #endif
 #if defined(FEEDBACK_SERIAL_USART3) || defined(CONTROL_SERIAL_USART3) || defined(DEBUG_SERIAL_USART3) || defined(SIDEBOARD_SERIAL_USART3)
   #ifndef USART3_BAUD
-    #define USART3_BAUD           115200                  // UART3 baud rate (short wired cable)
+    #define USART3_BAUD           38400                   // UART3 baud rate (short wired cable)
   #endif
   #define USART3_WORDLENGTH       UART_WORDLENGTH_8B      // UART_WORDLENGTH_8B or UART_WORDLENGTH_9B
 #endif

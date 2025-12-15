@@ -99,8 +99,23 @@ extern volatile uint16_t pwm_captured_ch2_value;
 #endif
 
 #if defined(VARIANT_LIFTLINE)
+// Méthode 1: Intégration RPM (actuelle)
 volatile int32_t distL_mm = 0;
 volatile int32_t distR_mm = 0;
+
+// Méthode 2: Comptage commutations Hall (alternative - voir config.h pour activer)
+volatile int32_t hallCountL = 0;  // Compteur de commutations Hall gauche
+volatile int32_t hallCountR = 0;  // Compteur de commutations Hall droit
+volatile int8_t  hallPosL_prev = 0;  // Position Hall précédente gauche
+volatile int8_t  hallPosR_prev = 0;  // Position Hall précédente droit
+
+#ifdef USE_HALL_INTERRUPT_TRACKING
+// Méthode 3: Comptage par interruption Hall (haute précision)
+volatile int32_t hallCountL_irq = 0;  // Compteur interruption gauche
+volatile int32_t hallCountR_irq = 0;  // Compteur interruption droit
+volatile int16_t cmdL_sign = 0;        // Signe de la commande moteur gauche (-1, 0, +1)
+volatile int16_t cmdR_sign = 0;        // Signe de la commande moteur droit (-1, 0, +1)
+#endif
 #endif
 
 //------------------------------------------------------------------------
@@ -130,10 +145,11 @@ typedef struct{
   int16_t   batVoltage;
   int16_t   boardTemp;
   #if defined(VARIANT_LIFTLINE)
-  int16_t  posR_cm;    // nouvelle position moteur droit (en cm)
-  int16_t  posL_cm;    // nouvelle position moteur gauche (en cm)
+  int16_t  posR_cm;    // Position moteur droit en décimètres (dm), plage ±3276.7m, résolution 10cm
+  int16_t  posL_cm;    // Position moteur gauche en décimètres (dm), plage ±3276.7m, résolution 10cm
   int16_t dcCurrL;   // left_dc_curr
   int16_t dcCurrR;   // right_dc_curr
+  uint16_t statusFlags; // LSB=errorFlags, MSB=statusByte (voir ERROR_FLAG_* et STATUS_* dans config.h)
   #endif
   #if !defined(VARIANT_LIFTLINE)
   uint16_t  cmdLed;
@@ -222,6 +238,33 @@ int main(void) {
   poweronMelody();
   HAL_GPIO_WritePin(LED_PORT, LED_PIN, GPIO_PIN_SET);
   
+  #if defined(VARIANT_LIFTLINE) && defined(USE_HALL_INTERRUPT_TRACKING)
+  // Reconfiguration des capteurs Hall en mode interruption pour comptage haute précision
+  // Note: Les GPIO sont déjà initialisés par setup.c, on change juste le mode
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  
+  // Reconfigurer capteurs Hall gauche (PB5, PB6, PB7) en mode interruption
+  GPIO_InitStruct.Pin = LEFT_HALL_U_PIN | LEFT_HALL_V_PIN | LEFT_HALL_W_PIN;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;  // Interruption front montant ET descendant
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+  
+  // Reconfigurer capteurs Hall droit (PC10, PC11, PC12) en mode interruption
+  GPIO_InitStruct.Pin = RIGHT_HALL_U_PIN | RIGHT_HALL_V_PIN | RIGHT_HALL_W_PIN;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+  
+  // Activer les interruptions EXTI
+  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 2, 0);    // Priorité modérée pour Hall gauche
+  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+  
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 2, 0);  // Priorité modérée pour Hall droit
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+  #endif
+  
   int32_t board_temp_adcFixdt = adc_buffer.temp << 16;  // Fixed-point filter output initialized with current ADC converted to fixed-point
   int16_t board_temp_adcFilt  = adc_buffer.temp;
 
@@ -261,12 +304,81 @@ int main(void) {
   #endif
 
   while(1) {
-    #if defined(VARIANT_LIFTLINE) // Calculate distance travelled in mm
+    #if defined(VARIANT_LIFTLINE)
+    
+    #ifdef USE_HALL_INTERRUPT_TRACKING
+    // ========== MÉTHODE 3: COMPTAGE PAR INTERRUPTION HALL (haute précision) ==========
+    // Avantages: Aucune perte de transitions, précision maximale à toutes vitesses, temps réel
+    // Inconvénients: Nécessite connaissance préalable de la direction (depuis cmdL/cmdR)
+    
+    // Mise à jour du signe de commande pour les interruptions
+    // Les interruptions utilisent ces valeurs pour savoir si incrémenter ou décrémenter
+    cmdL_sign = (cmdL > 10) ? 1 : (cmdL < -10) ? -1 : 0;
+    cmdR_sign = (cmdR > 10) ? 1 : (cmdR < -10) ? -1 : 0;
+    
+    // Convertir compteur d'interruption en distance (mm)
+    // Chaque transition Hall = 1/90 tour pour 15 paires de pôles
+    // distL_mm = hallCountL_irq × 487 / 90 = hallCountL_irq × 5.411 mm/transition
+    distL_mm = (hallCountL_irq * WHEEL_CIRCUMFERENCE_MM) / 90;
+    distR_mm = (hallCountR_irq * WHEEL_CIRCUMFERENCE_MM) / 90;
+    
+    #elif defined(USE_HALL_POSITION_TRACKING)
+    // ========== MÉTHODE 2: COMPTAGE COMMUTATIONS HALL ==========
+    // Avantages: Résolution fixe (90 steps/tour), pas d'accumulation d'erreur, indépendant de la vitesse
+    // Inconvénients: Résolution plus faible que RPM à haute vitesse
+    
+    // Extraire position Hall des contrôleurs BLDC (bits 0-2 des entrées Hall U,V,W)
+    uint8_t hallStateL = (rtU_Left.b_hallA << 2) | (rtU_Left.b_hallB << 1) | rtU_Left.b_hallC;
+    uint8_t hallStateR = (rtU_Right.b_hallA << 2) | (rtU_Right.b_hallB << 1) | rtU_Right.b_hallC;
+    
+    // Obtenir position Hall (0-5) depuis la table de correspondance partagée
+    extern const ConstP rtConstP;
+    int8_t hallPosL = rtConstP.vec_hallToPos_Value[hallStateL];
+    int8_t hallPosR = rtConstP.vec_hallToPos_Value[hallStateR];
+    
+    // Détecter changement de position Hall
+    if (hallPosL != hallPosL_prev && hallPosL != 0) {  // 0 = état invalide
+      int8_t deltaPos = hallPosL - hallPosL_prev;
+      
+      // Gérer le wrap-around (5→1 = +1, 1→5 = -1)
+      if (deltaPos > 3) deltaPos -= 6;
+      else if (deltaPos < -3) deltaPos += 6;
+      
+      hallCountL += deltaPos;  // Incrémenter/décrémenter selon direction
+      hallPosL_prev = hallPosL;
+    }
+    
+    if (hallPosR != hallPosR_prev && hallPosR != 0) {
+      int8_t deltaPos = hallPosR - hallPosR_prev;
+      
+      if (deltaPos > 3) deltaPos -= 6;
+      else if (deltaPos < -3) deltaPos += 6;
+      
+      hallCountR += deltaPos;
+      hallPosR_prev = hallPosR;
+    }
+    
+    // Convertir compteur Hall en distance (mm)
+    // Formule: steps × circonférence / (6 × n_polePairs)
+    // Pour 15 paires de pôles: 90 steps par tour mécanique
+    // distL_mm = hallCountL × 487 / 90 = hallCountL × 5.411 mm/step
+    distL_mm = (hallCountL * WHEEL_CIRCUMFERENCE_MM) / 90;
+    distR_mm = (hallCountR * WHEEL_CIRCUMFERENCE_MM) / 90;
+    
+    #else
+    // ========== MÉTHODE 1: INTÉGRATION RPM (par défaut) ==========
+    // Avantages: Haute résolution à vitesse élevée, calcul continu
+    // Inconvénients: Accumulation erreurs d'arrondi, dépend de la précision RPM
+    
+    // Distance = RPM × circumference × time_interval / 60000
+    // time_interval in ms, result in mm
     int32_t deltaL = (int32_t)rtY_Left.n_mot  * WHEEL_CIRCUMFERENCE_MM * DELAY_IN_MAIN_LOOP / 60000;
     int32_t deltaR = (int32_t)rtY_Right.n_mot * WHEEL_CIRCUMFERENCE_MM * DELAY_IN_MAIN_LOOP / 60000;
     distL_mm += deltaL;
     distR_mm += deltaR;
     #endif
+    
+    #endif  // VARIANT_LIFTLINE
 
     if (buzzerTimer - buzzerTimer_prev > 16*DELAY_IN_MAIN_LOOP) {   // 1 ms = 16 ticks buzzerTimer
 
@@ -527,19 +639,61 @@ int main(void) {
 
     // ####### FEEDBACK SERIAL OUT #######
     #if defined(FEEDBACK_SERIAL_USART2) || defined(FEEDBACK_SERIAL_USART3)
-      if (main_loop_counter % 2 == 0) {    // Send data periodically every 10 ms
+      if (main_loop_counter % 4 == 0) {    // Send data periodically every 20 ms
         Feedback.start	        = (uint16_t)SERIAL_START_FRAME;
         Feedback.cmd1           = (int16_t)input1[inIdx].cmd;
         Feedback.cmd2           = (int16_t)input2[inIdx].cmd;
-        Feedback.speedR_meas	  = (int16_t)rtY_Right.n_mot;
-        Feedback.speedL_meas	  = (int16_t)rtY_Left.n_mot;
+        // Convert motor RPM to km/h x100
+        Feedback.speedR_meas	  = (int16_t)RPM_TO_KPH_X100(rtY_Right.n_mot);
+        Feedback.speedL_meas	  = (int16_t)RPM_TO_KPH_X100(rtY_Left.n_mot);
         Feedback.batVoltage	    = (int16_t)batVoltageCalib;
         Feedback.boardTemp	    = (int16_t)board_temp_deg_c;
         #if defined(VARIANT_LIFTLINE)
-          Feedback.posR_cm      = (int16_t)(distR_mm / 10);  // position in cm
-          Feedback.posL_cm      = (int16_t)(distL_mm / 10);  // position in cm
-          Feedback.dcCurrL      = (int16_t)left_dc_curr;
-          Feedback.dcCurrR      = (int16_t)right_dc_curr;
+        Feedback.posR_cm      = (int16_t)(distR_mm / 100);  // Position en décimètres (1dm = 100mm = 10cm), plage ±3276.7m
+        Feedback.posL_cm      = (int16_t)(distL_mm / 100);  // Position en décimètres (1dm = 100mm = 10cm), plage ±3276.7m
+        Feedback.dcCurrL      = (int16_t)left_dc_curr;
+        Feedback.dcCurrR      = (int16_t)right_dc_curr;
+        
+        // Build error flags byte (LSB of statusFlags)
+        uint8_t errorFlags = ERROR_FLAG_NONE;
+        if (rtY_Left.z_errCode)        errorFlags |= ERROR_FLAG_MOTOR_LEFT;
+        if (rtY_Right.z_errCode)       errorFlags |= ERROR_FLAG_MOTOR_RIGHT;
+        if (timeoutFlgSerial)          errorFlags |= ERROR_FLAG_TIMEOUT_SERIAL;
+        if (timeoutFlgADC)             errorFlags |= ERROR_FLAG_TIMEOUT_ADC;
+        if (batVoltageCalib < BAT_LVL1) errorFlags |= ERROR_FLAG_BAT_LOW;
+        if (batVoltageCalib < BAT_DEAD) errorFlags |= ERROR_FLAG_BAT_CRITICAL;
+        if (board_temp_deg_c > 600)    errorFlags |= ERROR_FLAG_TEMP_HIGH;  // 60.0°C in (°C × 10)
+        if (!enable)                   errorFlags |= ERROR_FLAG_MOTOR_DISABLED;
+        
+        // Build status byte (MSB of statusFlags)
+        uint8_t statusByte = 0;
+        
+        // Bit 0: Motors enabled
+        if (enable) statusByte |= STATUS_ENABLE;
+        
+        // Bits 1-3: Battery level (0-7)
+        uint8_t batLevel = BAT_LEVEL_FULL;  // Default: full
+        if (batVoltageCalib < BAT_DEAD)      batLevel = BAT_LEVEL_CRITICAL;
+        else if (batVoltageCalib < BAT_LVL1) batLevel = BAT_LEVEL_LVL1;
+        else if (batVoltageCalib < BAT_LVL2) batLevel = BAT_LEVEL_LVL2;
+        else if (batVoltageCalib < BAT_LVL3) batLevel = BAT_LEVEL_LVL3;
+        else if (batVoltageCalib < BAT_LVL4) batLevel = BAT_LEVEL_LVL4;
+        else if (batVoltageCalib < BAT_LVL5) batLevel = BAT_LEVEL_LVL5;
+        statusByte |= (batLevel << 1);
+        
+        // Bits 4-5: Control mode (CTRL_MOD_REQ: 0=OPEN, 1=VLT, 2=SPD, 3=TRQ)
+        statusByte |= ((CTRL_MOD_REQ & 0x03) << 4);
+        
+        // Bit 6: Backward drive
+        if (backwardDrive) statusByte |= STATUS_BACKWARD;
+        
+        // Bit 7: Braking active (motors enabled but low command with speed > 50 RPM)
+        if (enable && speedAvgAbs > 50 && ABS(cmdL) < 100 && ABS(cmdR) < 100) {
+          statusByte |= STATUS_BRAKE_ACTIVE;
+        }
+        
+        // Combine errorFlags (LSB) and statusByte (MSB) into uint16_t
+        Feedback.statusFlags = ((uint16_t)statusByte << 8) | errorFlags;
         #endif
           #if defined(FEEDBACK_SERIAL_USART2)
           if(__HAL_DMA_GET_COUNTER(huart2.hdmatx) == 0) {
@@ -550,7 +704,8 @@ int main(void) {
             #endif
             #if defined(VARIANT_LIFTLINE)
             Feedback.checksum   = (uint16_t)(Feedback.start ^ Feedback.cmd1 ^ Feedback.cmd2 ^ Feedback.speedR_meas ^ Feedback.speedL_meas 
-                                           ^ Feedback.batVoltage ^ Feedback.boardTemp ^ Feedback.posR_cm ^ Feedback.posL_cm ^ Feedback.dcCurrL ^ Feedback.dcCurrR);
+                                           ^ Feedback.batVoltage ^ Feedback.boardTemp ^ Feedback.posR_cm ^ Feedback.posL_cm ^ Feedback.dcCurrL ^ Feedback.dcCurrR 
+                                           ^ (uint16_t)errorFlags ^ (uint16_t)statusByte);
             #endif
             HAL_UART_Transmit_DMA(&huart2, (uint8_t *)&Feedback, sizeof(Feedback));
           }
@@ -564,7 +719,8 @@ int main(void) {
             #endif
             #if defined(VARIANT_LIFTLINE)
             Feedback.checksum   = (uint16_t)(Feedback.start ^ Feedback.cmd1 ^ Feedback.cmd2 ^ Feedback.speedR_meas ^ Feedback.speedL_meas 
-                                           ^ Feedback.batVoltage ^ Feedback.boardTemp ^ Feedback.posR_cm ^ Feedback.posL_cm ^ Feedback.dcCurrL ^ Feedback.dcCurrR);
+                                           ^ Feedback.batVoltage ^ Feedback.boardTemp ^ Feedback.posR_cm ^ Feedback.posL_cm ^ Feedback.dcCurrL ^ Feedback.dcCurrR 
+                                           ^ (uint16_t)errorFlags ^ (uint16_t)statusByte);
             #endif
 
             HAL_UART_Transmit_DMA(&huart3, (uint8_t *)&Feedback, sizeof(Feedback));

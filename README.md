@@ -1,7 +1,111 @@
-# hoverboard-firmware-hack-FOC
+# hoverboard-firmware-hack-FOC - VARIANT_LIFTLINE
 [![Build status](https://github.com/EFeru/hoverboard-firmware-hack-FOC/actions/workflows/build_on_commit.yml/badge.svg)](https://github.com/EFeru/hoverboard-firmware-hack-FOC/actions/workflows/build_on_commit.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![paypal](https://www.paypalobjects.com/en_US/i/btn/btn_donate_SM.gif)](https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=CU2SWN2XV9SCY&currency_code=EUR&source=url)
+
+## LiftLine Variant - Custom Modifications
+
+This is a customized variant of the FOC hoverboard firmware specifically designed for the **LiftLine project**. It includes enhanced serial communication features and telemetry feedback.
+
+### 📖 Complete Serial Protocol Documentation
+
+**For detailed information about the serial communication protocol, see [`docs/SERIAL_PROTOCOL.md`](docs/SERIAL_PROTOCOL.md)**
+
+This comprehensive documentation includes:
+- Complete structure definitions and field descriptions
+- Error flags and status byte bit-wise definitions
+- Checksum calculation and validation algorithms
+- Little-endian byte order explanation
+- Practical examples and Python implementation code
+- Implementation checklist for receiver systems
+- All battery levels, control modes, and status indicators
+
+### Key Modifications
+
+#### Serial Communication Protocol (Quick Reference)
+- **Baud Rate:** 38400 bps (USART2 & USART3)
+- **Control Input:** USART3 - 8 bytes (speedL, speedR, checksum)
+- **Feedback Output:** USART2/USART3 - 26 bytes with extended telemetry
+- **Timeout Protection:** 0.8 seconds (automatic motor stop if no valid command received)
+- **Protocol Conformance:** 100% compatible with EFeru/hoverboard-firmware-hack-FOC
+
+#### Serial Protocol Summary
+
+**Command Frame (8 bytes):** `[0xABCD][speedL:int16][speedR:int16][XOR_checksum]`
+- Commands sent directly to individual motors (no mixing)
+- Positive values = forward, negative = reverse
+- Checksum: `start ^ speedL ^ speedR`
+
+**Telemetry Frame (26 bytes):** Sent every 10ms containing:
+- Motor speeds (km/h × 100)
+- Position tracking (distance in meters × 10)
+- Battery voltage (V × 100)
+- Board temperature (°C × 10)
+- DC currents for each motor (A × 100)
+- Combined error flags and status byte
+- XOR checksum validation
+
+**Key Features:**
+- Little-endian byte order (LSB first)
+- All fields 2-byte aligned (no padding)
+- 0.8 second command timeout for safety
+- Comprehensive error and status reporting
+
+### Complete Protocol Documentation
+
+**→ See [`docs/SERIAL_PROTOCOL.md`](docs/SERIAL_PROTOCOL.md) for:**
+  - Detailed structure definitions and field descriptions
+  - Bit-by-bit error flag and status byte definitions
+  - Battery level indicators (0-7 levels with voltage thresholds)
+  - Control mode values (OPEN, VOLTAGE, SPEED, TORQUE)
+  - Checksum calculation algorithms and validation
+  - Little-endian byte order examples
+  - Complete Python implementation with examples
+  - Implementation checklist for receiver systems
+
+---
+
+### Configuration Constants
+```c
+#define WHEEL_CIRCUMFERENCE_MM   487    // Wheel circumference (for ~155mm diameter)
+#define RPM_TO_KPH_X100(rpm)  (((int32_t)(rpm) * 487 * 6) / 1000)
+#define USART2_BAUD              38400  // Serial baud rate
+#define USART3_BAUD              38400  // Serial baud rate
+#define SERIAL_TIMEOUT           160    // ~0.8 sec timeout
+#define DELAY_IN_MAIN_LOOP       5      // Main loop delay in milliseconds (10ms update frequency)
+```
+
+---
+
+## Position Tracking Methods (VARIANT_LIFTLINE)
+
+The LiftLine variant includes three selectable methods for position tracking:
+
+### Method 1: RPM Integration (Default)
+- **Advantages:** High resolution at elevated speeds, continuous calculation
+- **Disadvantages:** Accumulation of rounding errors, depends on RPM precision
+- **Resolution:** Variable based on speed
+- **Formula:** `distance = RPM × wheel_circumference × time_interval / 60000`
+
+### Method 2: Hall Sensor Commutation Counting
+- **Advantages:** Fixed resolution (90 steps/revolution), no error accumulation, speed-independent
+- **Disadvantages:** Lower resolution than RPM at high speeds
+- **Resolution:** 5.4 mm per step (2.7mm with edge detection)
+- **Activation:** Define `USE_HALL_POSITION_TRACKING` in config.h
+- **Formula:** `distance = hall_count × wheel_circumference / 90`
+
+### Method 3: Hall Interrupt-Based Tracking (Highest Precision)
+- **Advantages:** No transition loss, maximum precision at all speeds, real-time updates
+- **Disadvantages:** Requires command direction knowledge (from cmdL/cmdR)
+- **Resolution:** 2.7 mm per transition
+- **Activation:** Define `USE_HALL_INTERRUPT_TRACKING` in config.h
+- **Key Features:** 
+  - Captures every Hall sensor edge (rising and falling)
+  - Direction-aware counting using motor command signs
+  - DMA-less operation with EXTI interrupts on PB5-7 (left) and PC10-12 (right)
+
+---
+
+## Original FOC Features
 
 This repository implements Field Oriented Control (FOC) for stock hoverboards. Compared to the commutation method, this new FOC control method offers superior performance featuring:
  - reduced noise and vibrations 	
